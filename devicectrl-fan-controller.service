@@ -1,0 +1,15 @@
+[Unit]
+Description=devicectrl fan controller
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+
+Environment=CONFIG_PATH=/etc/devicectrl-fan-controller/config.json
+ExecStart=/usr/local/bin/devicectrl-fan-controller
+
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
