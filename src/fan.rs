@@ -52,6 +52,7 @@ enum Cmd {
     LightOn = 0x10,
     LightOff = 0x11,
     LightBrightnessTemperature = 0x21,
+    Pair = 0x28,
 }
 
 #[derive(Debug)]
@@ -285,14 +286,28 @@ pub async fn send_update_to_fan(
     let packets = PacketData::from_command(&command, fan_state);
 
     for packet in packets {
-        log::debug!("sending packet: {packet:?}");
-
-        let serialized = packet.serialize();
-        let encrypted = encrypt(&serialized);
-        let wrapped = wrap_packet(&encrypted);
-
-        advertise_ble_message(hci_socket, &wrapped).await?;
+        send_packet_to_fan(packet, hci_socket).await?;
     }
 
     Ok(())
+}
+
+pub async fn send_keepalive_to_fan(
+    fan_state: &mut CachedFanState,
+    hci_socket: &HciSocket,
+) -> Result<()> {
+    let packet = PacketData::new(fan_state.tx_count, Cmd::Pair, [0, 0, 0]);
+    fan_state.tx_count = fan_state.tx_count.wrapping_add(1);
+
+    send_packet_to_fan(packet, hci_socket).await
+}
+
+async fn send_packet_to_fan(packet: PacketData, hci_socket: &HciSocket) -> Result<()> {
+    log::debug!("sending packet: {packet:?}");
+
+    let serialized = packet.serialize();
+    let encrypted = encrypt(&serialized);
+    let wrapped = wrap_packet(&encrypted);
+
+    advertise_ble_message(hci_socket, &wrapped).await
 }

@@ -3,11 +3,14 @@ use devicectrl_common::device_types::ceiling_fan::CeilingFanStateUpdate;
 use hciraw::{HciChannel, HciSocket, HciSocketAddr};
 use sd_notify::NotifyState;
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
-use tokio::{sync::broadcast, time::sleep};
+use tokio::{
+    sync::{Mutex, broadcast},
+    time::sleep,
+};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
 use crate::{
-    fan::{CachedFanState, send_update_to_fan},
+    fan::{CachedFanState, send_keepalive_to_fan, send_update_to_fan},
     transport::connect_to_server,
 };
 
@@ -15,6 +18,11 @@ mod ble;
 mod config;
 mod fan;
 mod transport;
+
+struct AppState {
+    pub hci_socket: HciSocket,
+    pub fan_state: Mutex<CachedFanState>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,7 +47,15 @@ async fn main() -> Result<()> {
     // only store about 2.5s worth of commands in the channel
     let (command_sender, mut command_receiver) = broadcast::channel::<CeilingFanStateUpdate>(5);
 
-    let hci_socket = HciSocket::bind(HciSocketAddr::new(Some(config.hci_device), HciChannel::Raw))?;
+    let app_state = Arc::new(AppState {
+        hci_socket: HciSocket::bind(HciSocketAddr::new(Some(config.hci_device), HciChannel::Raw))?,
+        fan_state: Mutex::new(CachedFanState {
+            tx_count: 16, // this is what FanLampPro app initializes with
+            power: true,
+            temperature: 0,
+            brightness: 255,
+        }),
+    });
 
     tokio::spawn(async move {
         loop {
@@ -50,14 +66,24 @@ async fn main() -> Result<()> {
         }
     });
 
-    let _ = sd_notify::notify(false, &[NotifyState::Ready]);
+    // Sometimes the fan ignores commands when it has not received a one for a while.
+    // I have not found anything documenting this, but sending a 'keepalive' seems to work. 🤷‍♂️
+    tokio::spawn({
+        let app_state = Arc::clone(&app_state);
+        async move {
+            loop {
+                sleep(Duration::from_secs(60 * 60)).await;
 
-    let mut fan_state = CachedFanState {
-        tx_count: 16, // this is what FanLampPro app initializes with
-        power: true,
-        temperature: 0,
-        brightness: 255,
-    };
+                let mut fan_state = app_state.fan_state.lock().await;
+                if let Err(err) = send_keepalive_to_fan(&mut fan_state, &app_state.hci_socket).await
+                {
+                    log::error!("{:?}", err.context("Failed to send keepalive to fan"));
+                }
+            }
+        }
+    });
+
+    let _ = sd_notify::notify(false, &[NotifyState::Ready]);
 
     loop {
         let new_state = command_receiver
@@ -66,6 +92,7 @@ async fn main() -> Result<()> {
             .context("Failed to receive command")?;
 
         // since this takes 500ms the recv() call above may lag when under pressure
-        send_update_to_fan(new_state, &mut fan_state, &hci_socket).await?;
+        let mut fan_state = app_state.fan_state.lock().await;
+        send_update_to_fan(new_state, &mut fan_state, &app_state.hci_socket).await?;
     }
 }
