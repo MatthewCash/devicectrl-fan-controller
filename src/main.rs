@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use devicectrl_common::device_types::ceiling_fan::CeilingFanStateUpdate;
+use devicectrl_common::updates::AttributeUpdate;
 use hciraw::{HciChannel, HciSocket, HciSocketAddr};
 use sd_notify::NotifyState;
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
     );
 
     // only store about 2.5s worth of commands in the channel
-    let (command_sender, mut command_receiver) = broadcast::channel::<CeilingFanStateUpdate>(5);
+    let (command_sender, mut command_receiver) = broadcast::channel::<AttributeUpdate>(5);
 
     let app_state = Arc::new(AppState {
         hci_socket: HciSocket::bind(HciSocketAddr::new(Some(config.hci_device), HciChannel::Raw))?,

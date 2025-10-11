@@ -4,7 +4,7 @@ use aes::{
 };
 use anyhow::{Result, bail};
 use crc::{CRC_16_XMODEM, Crc};
-use devicectrl_common::device_types::ceiling_fan::{CeilingFanStateUpdate, FanDirection};
+use devicectrl_common::{device_types::ceiling_fan::FanDirection, updates::AttributeUpdate};
 use hciraw::HciSocket;
 
 use crate::ble::advertise_ble_message;
@@ -89,16 +89,17 @@ struct PacketData {
 }
 
 impl PacketData {
-    fn from_command(command: &CeilingFanStateUpdate, fan_state: &mut CachedFanState) -> Vec<Self> {
+    fn from_command(update: &AttributeUpdate, fan_state: &mut CachedFanState) -> Vec<Self> {
         let mut packets = Vec::new();
 
-        if let Some(brightness) = &command.light_brightness {
-            fan_state.brightness = *brightness;
+        if let AttributeUpdate::Brightness(update) = &update {
+            let brightness = update.brightness;
+            fan_state.brightness = brightness;
 
             // the fan has a power state, so we need to send a command to turn it on or off
             // because the api does not have a separate power state, it just has brightness
-            if (*brightness != 0) != fan_state.power {
-                fan_state.power = *brightness != 0;
+            if (brightness != 0) != fan_state.power {
+                fan_state.power = brightness != 0;
                 packets.push(Self::new(
                     fan_state.tx_count,
                     match brightness {
@@ -112,11 +113,14 @@ impl PacketData {
             }
         }
 
-        if let Some(temperature) = command.light_color_temp {
-            fan_state.temperature = temperature;
+        if let AttributeUpdate::ColorTemp(update) = update {
+            fan_state.temperature = update.light_color_temp;
         }
 
-        if command.light_brightness.is_some() || command.light_color_temp.is_some() {
+        if matches!(
+            update,
+            AttributeUpdate::Brightness(_) | AttributeUpdate::ColorTemp(_)
+        ) {
             let brightness = fan_state.brightness as f32;
             let temperature = fan_state.temperature as f32;
 
@@ -132,12 +136,12 @@ impl PacketData {
             fan_state.tx_count = fan_state.tx_count.wrapping_add(1);
         }
 
-        if let Some(direction) = &command.fan_direction {
+        if let AttributeUpdate::FanDirection(update) = &update {
             packets.push(Self::new(
                 fan_state.tx_count,
                 Cmd::Direction,
                 [
-                    match direction {
+                    match update.fan_direction {
                         FanDirection::Forward => 0,
                         FanDirection::Reverse => 1,
                     },
@@ -148,11 +152,11 @@ impl PacketData {
             fan_state.tx_count = fan_state.tx_count.wrapping_add(1);
         }
 
-        if let Some(speed) = &command.fan_speed {
+        if let AttributeUpdate::FanSpeed(update) = &update {
             packets.push(Self::new(
                 fan_state.tx_count,
                 Cmd::FanSpeed,
-                [32, *speed, 0],
+                [32, update.fan_speed, 0],
             ));
             fan_state.tx_count = fan_state.tx_count.wrapping_add(1);
         }
@@ -279,11 +283,11 @@ fn encrypt(decoded: &SerializedPacket) -> EncryptedPacket {
 }
 
 pub async fn send_update_to_fan(
-    command: CeilingFanStateUpdate,
+    update: AttributeUpdate,
     fan_state: &mut CachedFanState,
     hci_socket: &HciSocket,
 ) -> Result<()> {
-    let packets = PacketData::from_command(&command, fan_state);
+    let packets = PacketData::from_command(&update, fan_state);
 
     for packet in packets {
         send_packet_to_fan(packet, hci_socket).await?;

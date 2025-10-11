@@ -20,14 +20,16 @@ Example:
 
 Simply execute:
 
-`CONFIG_PATH=config.toml cargo run`
+`CONFIG_PATH=config.json cargo run`
 
 Or use the provided systemd service:
 
 ```bash
 cargo build --release
-sudo install -m 755 ./target/release/devicectrl-fan-controller /usr/local/bin/
+
+sudo install -m 755 ./target/release/devicectrl-fan-controller /usr/local/bin
 sudo install -m 644 devicectrl-fan-controller.service /etc/systemd/system/
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now devicectrl-fan-controller
 ```
