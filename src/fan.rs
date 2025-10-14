@@ -28,7 +28,6 @@ const XOR_LUT: [u8; 128] = [
     0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68, 0x41, 0x99, 0x2D, 0x0F, 0xB0, 0x54, 0xBB, 0x16,
 ];
 
-const UID: u32 = 0x719c5681;
 const SEED: u16 = 0x2B53;
 const INDEX: u8 = 0;
 const DEVICE_TYPE: u16 = 1024;
@@ -43,6 +42,8 @@ pub struct CachedFanState {
     pub power: bool,
     pub temperature: u8,
     pub brightness: u8,
+
+    pub remote_uid: u32, // not actually fan state, but convenient to store here
 }
 
 #[repr(u8)]
@@ -102,6 +103,7 @@ impl PacketData {
                 fan_state.power = brightness != 0;
                 packets.push(Self::new(
                     fan_state.tx_count,
+                    fan_state.remote_uid,
                     match brightness {
                         0 => Cmd::LightOff,
                         _ => Cmd::LightOn,
@@ -126,6 +128,7 @@ impl PacketData {
 
             packets.push(Self::new(
                 fan_state.tx_count,
+                fan_state.remote_uid,
                 Cmd::LightBrightnessTemperature,
                 [
                     0,
@@ -139,6 +142,7 @@ impl PacketData {
         if let AttributeUpdate::FanDirection(update) = &update {
             packets.push(Self::new(
                 fan_state.tx_count,
+                fan_state.remote_uid,
                 Cmd::Direction,
                 [
                     match update.fan_direction {
@@ -155,6 +159,7 @@ impl PacketData {
         if let AttributeUpdate::FanSpeed(update) = &update {
             packets.push(Self::new(
                 fan_state.tx_count,
+                fan_state.remote_uid,
                 Cmd::FanSpeed,
                 [32, update.fan_speed, 0],
             ));
@@ -163,11 +168,11 @@ impl PacketData {
 
         packets
     }
-    fn new(tx_count: u8, cmd: Cmd, args: [u8; 3]) -> Self {
+    fn new(tx_count: u8, uid: u32, cmd: Cmd, args: [u8; 3]) -> Self {
         Self {
             tx_count,
             device_type: DEVICE_TYPE,
-            uid: UID,
+            uid,
             index: INDEX,
             cmd: cmd as u8,
             arg0: args[0],
@@ -300,7 +305,12 @@ pub async fn send_keepalive_to_fan(
     fan_state: &mut CachedFanState,
     hci_socket: &HciSocket,
 ) -> Result<()> {
-    let packet = PacketData::new(fan_state.tx_count, Cmd::Pair, [0, 0, 0]);
+    let packet = PacketData::new(
+        fan_state.tx_count,
+        fan_state.remote_uid,
+        Cmd::Pair,
+        [0, 0, 0],
+    );
     fan_state.tx_count = fan_state.tx_count.wrapping_add(1);
 
     send_packet_to_fan(packet, hci_socket).await

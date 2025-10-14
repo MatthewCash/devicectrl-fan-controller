@@ -54,6 +54,8 @@ async fn main() -> Result<()> {
             power: true,
             temperature: 0,
             brightness: 255,
+
+            remote_uid: config.remote_uid,
         }),
     });
 

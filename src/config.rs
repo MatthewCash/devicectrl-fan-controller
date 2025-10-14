@@ -23,6 +23,7 @@ pub struct Config {
         deserialize_with = "deserialize_signing_key"
     )]
     pub private_key: SigningKey,
+    pub remote_uid: u32,
     pub hci_device: u16,
 }
 
