@@ -10,7 +10,7 @@ crc = "3.3.0"
 futures = "0.3.31"
 hciraw = "1.0.1"
 devicectrl-common = { git = "https://github.com/MatthewCash/devicectrl-common.git", features = [
-    "alloc",
+    "tokio",
 ] }
 log = "0.4.28"
 p256 = "0.13.2"

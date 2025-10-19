@@ -1,23 +1,22 @@
 use anyhow::{Context, Result};
-use devicectrl_common::updates::AttributeUpdate;
+use devicectrl_common::{
+    DeviceState,
+    protocol::simple::{
+        DeviceBoundSimpleMessage, ServerBoundSimpleMessage,
+        tokio::{CryptoContext, TransportEvent, make_transport_channels, transport_task},
+    },
+};
 use hciraw::{HciChannel, HciSocket, HciSocketAddr};
 use sd_notify::NotifyState;
-use std::{env, path::PathBuf, sync::Arc, time::Duration};
-use tokio::{
-    sync::{Mutex, broadcast},
-    time::sleep,
-};
+use std::{env, path::PathBuf, time::Duration};
+use tokio::{sync::Mutex, time::sleep};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter};
 
-use crate::{
-    fan::{CachedFanState, send_keepalive_to_fan, send_update_to_fan},
-    transport::connect_to_server,
-};
+use crate::fan::{CachedFanState, send_keepalive_to_fan, send_update_to_fan};
 
 mod ble;
 mod config;
 mod fan;
-mod transport;
 
 struct AppState {
     pub hci_socket: HciSocket,
@@ -36,18 +35,15 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let config = Arc::new(
+    let config = Box::leak(Box::new(
         config::load_config(&PathBuf::from(
             env::var("CONFIG_PATH").expect("CONFIG_PATH env var missing!"),
         ))
         .await
         .context("failed to load config")?,
-    );
+    ));
 
-    // only store about 2.5s worth of commands in the channel
-    let (command_sender, mut command_receiver) = broadcast::channel::<AttributeUpdate>(5);
-
-    let app_state = Arc::new(AppState {
+    let app_state: &AppState = Box::leak(Box::new(AppState {
         hci_socket: HciSocket::bind(HciSocketAddr::new(Some(config.hci_device), HciChannel::Raw))?,
         fan_state: Mutex::new(CachedFanState {
             tx_count: 16, // this is what FanLampPro app initializes with
@@ -57,21 +53,25 @@ async fn main() -> Result<()> {
 
             remote_uid: config.remote_uid,
         }),
-    });
+    }));
 
-    tokio::spawn(async move {
-        loop {
-            if let Err(err) = connect_to_server(&config, &command_sender).await {
-                log::error!("{:?}", err.context("Failed to handle server loop"));
-            }
-            sleep(Duration::from_secs(5)).await;
-        }
-    });
+    let (mut client_channels, worker_channels) = make_transport_channels(16);
 
-    // Sometimes the fan ignores commands when it has not received a one for a while.
+    let crypto = CryptoContext {
+        server_public_key: config.server_public_key,
+        private_key: config.private_key.clone(),
+    };
+
+    tokio::spawn(transport_task(
+        config.server_addr,
+        worker_channels,
+        config.device_id,
+        crypto,
+    ));
+
+    // Sometimes the fan ignores commands when it has not received one for a while.
     // I have not found anything documenting this, but sending a 'keepalive' seems to work. 🤷‍♂️
     tokio::spawn({
-        let app_state = Arc::clone(&app_state);
         async move {
             loop {
                 sleep(Duration::from_secs(60 * 60)).await;
@@ -88,13 +88,36 @@ async fn main() -> Result<()> {
     let _ = sd_notify::notify(false, &[NotifyState::Ready]);
 
     loop {
-        let new_state = command_receiver
+        match client_channels
+            .incoming
             .recv()
             .await
-            .context("Failed to receive command")?;
-
-        // since this takes 500ms the recv() call above may lag when under pressure
-        let mut fan_state = app_state.fan_state.lock().await;
-        send_update_to_fan(new_state, &mut fan_state, &app_state.hci_socket).await?;
+            .context("Failed to receive command")?
+        {
+            TransportEvent::Connected => {
+                log::info!("Connected to server!");
+            }
+            TransportEvent::Error(err) => {
+                log::error!("{:?}", err.context("failed to communicate with server"));
+            }
+            TransportEvent::Message(DeviceBoundSimpleMessage::UpdateCommand(update)) => {
+                // since this takes 500ms the recv() call above may lag when under pressure
+                let mut fan_state = app_state.fan_state.lock().await;
+                send_update_to_fan(update.update, &mut fan_state, &app_state.hci_socket).await?;
+            }
+            TransportEvent::Message(DeviceBoundSimpleMessage::StateQuery { device_id }) => {
+                client_channels
+                    .outgoing
+                    .send(ServerBoundSimpleMessage::UpdateNotification(
+                        devicectrl_common::UpdateNotification {
+                            device_id,
+                            reachable: true,
+                            new_state: DeviceState::Unknown,
+                        },
+                    ))
+                    .await?;
+            }
+            _ => {}
+        }
     }
 }

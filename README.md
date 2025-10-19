@@ -12,6 +12,7 @@ Example:
     "server_addr": "10.0.2.1:8895",
     "server_public_key_path": "/etc/devicectrl-fan-controller/server_public.der",
     "private_key_path": "/etc/devicectrl-fan-controller/fan-contorller_private.der",
+    "remote_uid": 123,
     "hci_device": 0
 }
 ```
