@@ -4,10 +4,31 @@ use aes::{
 };
 use anyhow::{Result, bail};
 use crc::{CRC_16_XMODEM, Crc};
-use devicectrl_common::{device_types::ceiling_fan::FanDirection, updates::AttributeUpdate};
+use devicectrl_common::{
+    device_types::{NumericProperties, ceiling_fan::FanDirection},
+    updates::AttributeUpdate,
+};
 use hciraw::HciSocket;
 
 use crate::ble::advertise_ble_message;
+
+const BRIGHTNESS_PROPS: NumericProperties = NumericProperties {
+    min: 0,
+    max: 255,
+    step: 1,
+};
+
+const COLOR_TEMP_PROPS: NumericProperties = NumericProperties {
+    min: 0,
+    max: 255,
+    step: 1,
+};
+
+const SPEED_PROPS: NumericProperties = NumericProperties {
+    min: 0,
+    max: 6,
+    step: 1,
+};
 
 // Values and algorithms derived from https://github.com/NicoIIT/ha-ble-adv
 
@@ -40,8 +61,9 @@ const DEVICE_TYPE: u16 = 1024;
 pub struct CachedFanState {
     pub tx_count: u8,
     pub power: bool,
-    pub temperature: u8,
+    pub color_temp: u8,
     pub brightness: u8,
+    pub speed: u8,
 
     pub remote_uid: u32, // not actually fan state, but convenient to store here
 }
@@ -93,8 +115,10 @@ impl PacketData {
     fn from_command(update: &AttributeUpdate, fan_state: &mut CachedFanState) -> Vec<Self> {
         let mut packets = Vec::new();
 
-        if let AttributeUpdate::Brightness(update) = &update {
-            let brightness = update.brightness;
+        if let AttributeUpdate::Brightness(brightness) = &update {
+            let brightness =
+                brightness.apply_to(&BRIGHTNESS_PROPS.to_state(fan_state.brightness as u32)) as u8;
+
             fan_state.brightness = brightness;
 
             // the fan has a power state, so we need to send a command to turn it on or off
@@ -115,8 +139,9 @@ impl PacketData {
             }
         }
 
-        if let AttributeUpdate::ColorTemp(update) = update {
-            fan_state.temperature = update.light_color_temp;
+        if let AttributeUpdate::ColorTemp(color_temp) = update {
+            fan_state.color_temp =
+                color_temp.apply_to(&COLOR_TEMP_PROPS.to_state(fan_state.color_temp as u32)) as u8;
         }
 
         if matches!(
@@ -124,7 +149,7 @@ impl PacketData {
             AttributeUpdate::Brightness(_) | AttributeUpdate::ColorTemp(_)
         ) {
             let brightness = fan_state.brightness as f32;
-            let temperature = fan_state.temperature as f32;
+            let temperature = fan_state.color_temp as f32;
 
             packets.push(Self::new(
                 fan_state.tx_count,
@@ -139,13 +164,13 @@ impl PacketData {
             fan_state.tx_count = fan_state.tx_count.wrapping_add(1);
         }
 
-        if let AttributeUpdate::FanDirection(update) = &update {
+        if let AttributeUpdate::FanDirection(fan_direction) = &update {
             packets.push(Self::new(
                 fan_state.tx_count,
                 fan_state.remote_uid,
                 Cmd::Direction,
                 [
-                    match update.fan_direction {
+                    match fan_direction {
                         FanDirection::Forward => 0,
                         FanDirection::Reverse => 1,
                     },
@@ -156,12 +181,14 @@ impl PacketData {
             fan_state.tx_count = fan_state.tx_count.wrapping_add(1);
         }
 
-        if let AttributeUpdate::FanSpeed(update) = &update {
+        if let AttributeUpdate::FanSpeed(fan_speed) = &update {
+            let fan_speed = fan_speed.apply_to(&SPEED_PROPS.to_state(fan_state.speed as u32)) as u8;
+
             packets.push(Self::new(
                 fan_state.tx_count,
                 fan_state.remote_uid,
                 Cmd::FanSpeed,
-                [32, update.fan_speed, 0],
+                [32, fan_speed, 0],
             ));
             fan_state.tx_count = fan_state.tx_count.wrapping_add(1);
         }

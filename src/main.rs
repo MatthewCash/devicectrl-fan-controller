@@ -48,8 +48,9 @@ async fn main() -> Result<()> {
         fan_state: Mutex::new(CachedFanState {
             tx_count: 16, // this is what FanLampPro app initializes with
             power: true,
-            temperature: 0,
+            color_temp: 0,
             brightness: 255,
+            speed: 0,
 
             remote_uid: config.remote_uid,
         }),
